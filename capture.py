@@ -1,7 +1,7 @@
 import json
 from urllib.parse import urlparse
 
-def parse_har_and_search_string(har_file, search_string=None, content_type_filter=None, method_filter=None):
+def parse_har_and_search_string(har_file, search_string=None, content_type_filter=None, method_filter=None, content_type_location="both"):
     try:
         # Open and load the HAR file
         with open(har_file, 'r', encoding='utf-8') as file:
@@ -25,36 +25,40 @@ def parse_har_and_search_string(har_file, search_string=None, content_type_filte
             "twitter.com"
         ]
 
-        # Search for the string in the entire request and response
+        # List to store matching entries
         results = []
+
         for idx, entry in enumerate(entries):
             request = entry.get('request', {})
             response = entry.get('response', {})
             url = request.get('url', '')
             method = request.get('method', 'UNKNOWN')
 
-            # Debug: Print method and URL to check
-            print(f"Processing entry #{idx + 1}, Method: {method}, URL: {url}")
-
             # **Only consider selected method (POST or GET)**
-            if method_filter:
-                if method.upper() != method_filter.upper():
-                    continue  # Skip if the method does not match the filter
+            if method_filter and method.upper() != method_filter.upper():
+                continue  # Skip if the method does not match the filter
 
+            # Extract headers, post data, and content from request and response
             headers = request.get('headers', [])
             response_headers = response.get('headers', [])
             request_post_data = request.get('postData', {}).get('text', '')
             response_content = response.get('content', {}).get('text', '')
-            content_type = response.get('content', {}).get('mimeType', 'UNKNOWN')
+            
+            # Extract content type from headers (request and response)
+            content_type_request = 'UNKNOWN'
+            content_type_response = 'UNKNOWN'
 
-            # Extract content type from both request and response headers
-            for header in headers + response_headers:
+            # Iterate over request headers to find Content-Type
+            for header in headers:
                 if header.get('name', '').lower() == 'content-type':
-                    content_type = header.get('value', '')
+                    content_type_request = header.get('value', 'UNKNOWN')
                     break
 
-            # Debug: Check content type
-            print(f"Content Type: {content_type}, Content Type Filter: {content_type_filter}")
+            # Iterate over response headers to find Content-Type
+            for header in response_headers:
+                if header.get('name', '').lower() == 'content-type':
+                    content_type_response = header.get('value', 'UNKNOWN')
+                    break
 
             # Parse URL to check for matches in query parameters
             parsed_url = urlparse(url)
@@ -66,32 +70,37 @@ def parse_har_and_search_string(har_file, search_string=None, content_type_filte
                 continue
 
             # Only consider transactions with the specified content type filter
-            if content_type_filter and content_type_filter not in content_type:
-                print(f"Skipping entry due to content type mismatch: {content_type}")
-                continue  # Skip this transaction if content type does not match the filter
+            content_type_match = False
+            if content_type_location == "request" and content_type_filter and content_type_filter in content_type_request:
+                content_type_match = True
+            elif content_type_location == "response" and content_type_filter and content_type_filter in content_type_response:
+                content_type_match = True
+            elif content_type_location == "both" and (content_type_filter in content_type_request or content_type_filter in content_type_response):
+                content_type_match = True
 
-            # Check for matches in the request and response
-            match_sources = []
+            # Check for search_string matches in the request and response
+            match_found = False
+            if search_string:
+                # Check in query parameters
+                if search_string in query:
+                    match_found = True
+                # Check in headers
+                if any(search_string in header.get('name', '') or search_string in header.get('value', '') for header in headers):
+                    match_found = True
+                # Check in request body (POST data)
+                if search_string in request_post_data:
+                    match_found = True
+                # Check in response content
+                if search_string in response_content:
+                    match_found = True
 
-            if search_string and search_string in query:
-                match_sources.append("Request Query Parameter")
-            if search_string and any(search_string in header.get('name', '') or search_string in header.get('value', '') for header in headers):
-                match_sources.append("Request Header")
-            if search_string and search_string in request_post_data:
-                match_sources.append("Request Body")
-            if search_string and search_string in response_content:
-                match_sources.append("Response Content")
+            # If no matches for the search string, but a content-type filter is applied and matches, include it
+            if (search_string and match_found) or (not search_string and content_type_match):
+                # Append matching transaction details
+                status = response.get('status', None)
+                started_date_time = entry.get('startedDateTime', 'UNKNOWN')
+                time_taken = entry.get('time', 'UNKNOWN')
 
-            # Debug: Check if any matches were found
-            print(f"Match Sources: {match_sources}")
-
-            # Append matching transaction details
-            status = response.get('status', None)
-            started_date_time = entry.get('startedDateTime', 'UNKNOWN')
-            time_taken = entry.get('time', 'UNKNOWN')
-
-            # If there are any matches or if the content type matches the filter, include the entry
-            if match_sources or (not search_string and content_type_filter):
                 results.append({
                     "Packet Number": idx + 1,
                     "URL": url,
@@ -99,8 +108,7 @@ def parse_har_and_search_string(har_file, search_string=None, content_type_filte
                     "Status": status,
                     "Start Time": started_date_time,
                     "Time Taken (ms)": time_taken,
-                    "Match Sources": ", ".join(match_sources) if match_sources else "Content Type Filter",
-                    "Transaction Type": content_type
+                    "Transaction Type": content_type_response
                 })
 
         # Return results or a message if no matches are found
@@ -134,8 +142,14 @@ if __name__ == "__main__":
         content_type_filter = input("Enter content type to filter (e.g., image/jpeg, application/json) or leave blank to skip: ").strip()
         content_type_filter = content_type_filter if content_type_filter else None
 
+        # Ask for content type location (request, response, or both)
+        content_type_location = input("Enter where to search for content-type (request/response/both): ").strip().lower()
+        if content_type_location not in ['request', 'response', 'both']:
+            print("Invalid content type location. Please enter 'request', 'response', or 'both'.")
+            continue
+
         # Parse the HAR file and search for the string
-        results = parse_har_and_search_string(har_path, search_string, content_type_filter, method_filter)
+        results = parse_har_and_search_string(har_path, search_string, content_type_filter, method_filter, content_type_location)
         
         if isinstance(results, list) and results:
             for result in results:
