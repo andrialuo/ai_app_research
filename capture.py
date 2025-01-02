@@ -69,14 +69,20 @@ def parse_har_and_search_string(har_file, search_string=None, content_type_filte
             if any(ad_domain in domain for ad_domain in ad_domains):
                 continue
 
+            # Ensure content_type_request and content_type_response are never None
+            content_type_request = content_type_request or ''
+            content_type_response = content_type_response or ''
+
             # Only consider transactions with the specified content type filter
             content_type_match = False
             if content_type_location == "request" and content_type_filter and content_type_filter in content_type_request:
                 content_type_match = True
             elif content_type_location == "response" and content_type_filter and content_type_filter in content_type_response:
                 content_type_match = True
-            elif content_type_location == "both" and (content_type_filter in content_type_request or content_type_filter in content_type_response):
-                content_type_match = True
+            elif content_type_location == "both" and content_type_filter:
+                # Ensure content_type_filter is checked against non-None content types
+                if content_type_filter in content_type_request or content_type_filter in content_type_response:
+                    content_type_match = True
 
             # Check for search_string matches in the request and response
             match_found = False
